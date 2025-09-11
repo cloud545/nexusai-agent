@@ -18,9 +18,9 @@
     "axios": "1.6.7",
     "electron-squirrel-startup": "1.0.0",
     "keytar": "7.9.0",
-    "playwright": "1.42.1"
+    "playwright-core": "1.42.1"
   },
-   "devDependencies": {
+  "devDependencies": {
     "@electron-forge/cli": "7.4.0",
     "@electron-forge/maker-deb": "7.4.0",
     "@electron-forge/maker-rpm": "7.4.0",
@@ -29,6 +29,7 @@
     "@electron-forge/plugin-auto-unpack-natives": "7.4.0",
     "@electron-forge/plugin-webpack": "7.4.0",
     "@electron-forge/shared-types": "7.4.0",
+    "@types/webpack": "5.28.5",
     "@typescript-eslint/eslint-plugin": "7.5.0",
     "@typescript-eslint/parser": "7.5.0",
     "@vercel/webpack-asset-relocator-loader": "1.7.3",
@@ -36,13 +37,12 @@
     "electron": "29.2.0",
     "eslint": "8.57.0",
     "eslint-plugin-import": "2.29.1",
+    "fork-ts-checker-webpack-plugin": "9.0.2",
     "node-loader": "2.0.0",
     "style-loader": "3.3.4",
     "ts-loader": "9.5.1",
     "ts-node": "10.9.2",
     "typescript": "5.4.3",
-    "webpack": "5.91.0",
-    "@types/webpack": "5.28.5",
-	"fork-ts-checker-webpack-plugin": "9.0.2"
+    "webpack": "5.91.0"
   }
 }

@@ -11,8 +11,9 @@ export class ApiService {
   constructor() {
     // 1. Initialize axios instance with base URL and timeout
     this.axiosInstance = axios.create({
-      baseURL: 'http://localhost:3333',
+      baseURL: 'http://127.0.0.1:3333',
       timeout: 15000,
+      proxy: false,
     });
 
     // 2. Implement a request interceptor to add the auth token
