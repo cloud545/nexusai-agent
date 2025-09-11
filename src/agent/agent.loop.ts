@@ -1,4 +1,5 @@
-﻿import { ApiService } from '../services/api.service';
+﻿// All imports and the parser function remain the same.
+import { ApiService } from '../services/api.service';
 import { OllamaService } from '../services/ollama.service';
 import { BrowserService } from '../services/browser.service';
 import { Page } from 'playwright-core';
@@ -24,7 +25,7 @@ const parseAiResponse = (response: string): { thought: string; action: ActionNam
 };
 
 interface AgentState {
-    lastScrapedPosts: { postUrl: string, textContent: string }[];
+    lastScrapedPosts: { postUrl: string, textContent: string, authorProfileUrl?: string }[];
     interactedPostUrls: string[];
 }
 
@@ -56,14 +57,12 @@ export class AgentLoop {
 
         while (true) {
             console.log('\n--- AgentLoop: New Iteration ---');
-            // FIX 1: Define a type for the task payload for type safety
-            const task: { taskId: string; type: string; payload: { groupName: string; commentText: string; targetUsername: string | null; } } = {
+            const task = {
                 taskId: 'task-FINAL-DEMO',
-                type: 'FULL_ENGAGEMENT_IN_GROUP',
+                type: 'FULL_ENGAGEMENT_AND_CONNECT',
                 payload: {
                     groupName: '上海交友',
-                    commentText: '这个分享很有意思！',
-                    targetUsername: null,
+                    commentText: '这个分享很有意思！', // Default comment text
                 }
             };
 
@@ -71,17 +70,15 @@ export class AgentLoop {
                 console.log('[AgentLoop] Received task:', task);
                 this.history = [];
                 this.state = { lastScrapedPosts: [], interactedPostUrls: [] };
-                this.addToHistory('USER', `My high-level task is to perform a full engagement cycle in the group: '${task.payload.groupName}'.`);
+                this.addToHistory('USER', `My task is to perform a full engagement cycle in the group: '${task.payload.groupName}'.`);
                 
                 let observation = `I am on the Facebook homepage.`;
                 
                 for (let i = 0; i < 15; i++) {
-                    // For this demo, we use the local brain for planning
                     const prompt = this.buildPrompt(task, observation);
                     const aiResponse = await this.ollamaService.generateLocalCompletion(prompt, 'mistral:7b-instruct');
 
                     if (!aiResponse) { break; }
-                    // FIX 2: Corrected the function name from the copy-paste error
                     const parsedResponse = parseAiResponse(aiResponse);
                     if (!parsedResponse) {
                         observation = 'My last response was unparsable.';
@@ -89,28 +86,42 @@ export class AgentLoop {
                         continue;
                     }
                     
-                    const { thought, action, parameters: aiParameters } = parsedResponse;
+                    const { thought, action } = parsedResponse; // We only trust the AI's action choice
                     this.addToHistory('SYSTEM', `Thought: ${thought}\nAction: ${action}`);
                     console.log(`[AI Thought] ${thought}`);
-                    console.log(`[Agent Action] Executing: ${action}`);
+                    console.log(`[Agent Action] Decided Action: ${action}`);
 
-                    // FIX 3: Cast 'action' to ActionName to satisfy TypeScript
-                    const actionFunction = actionRegistry[action as ActionName];
+                    const actionFunction = actionRegistry[action];
                     if (typeof actionFunction === 'function') {
-                        let finalParameters = { ...task.payload, ...aiParameters };
+                        // --- START OF ULTIMATE FIX: CODE HAS ABSOLUTE CONTROL ---
                         
-                        if (['likePost', 'commentOnPost', 'sendFriendRequest'].includes(action) && this.state.lastScrapedPosts.length > 0) {
+                        // 1. Start with the base parameters from the original task
+                        let finalParameters: any = { ...task.payload };
+
+                        // 2. Based on the action chosen by the AI, CODE assembles the parameters
+                        if (action === 'scrapePostsFromTarget') {
+                            finalParameters.count = 5; // Code decides a reasonable count
+                        } else if (['likePost', 'commentOnPost', 'sendFriendRequest'].includes(action)) {
                             const targetPost = this.state.lastScrapedPosts.find(p => !this.state.interactedPostUrls.includes(p.postUrl));
                             if (targetPost) {
                                 finalParameters.postUrl = targetPost.postUrl;
+                                // If we're commenting and there's no text, trigger smart mode
+                                if (action === 'commentOnPost' && !finalParameters.commentText) {
+                                    finalParameters.generateSmartComment = true;
+                                }
+                            } else {
+                                // If no target post is available, the only logical action is to scrape more or finish
+                                observation = `I wanted to interact, but I have no unscraped posts in my memory. I should probably scrape some.`;
+                                this.addToHistory('OBSERVATION', observation);
+                                console.log('[Code Override] No target post found for interaction. Forcing re-evaluation.');
+                                continue; // Skip to the next loop iteration to re-think
                             }
+                        } else if (action === 'finish_task') {
+                            finalParameters = { success: true, message: "Task completed successfully." };
                         }
                         
-                        if (action === 'commentOnPost' && !finalParameters.commentText) {
-                            finalParameters.generateSmartComment = true;
-                        }
-
-                        console.log(`[Agent Action] Final merged parameters:`, finalParameters);
+                        console.log(`[Code Control] Assembled final parameters:`, finalParameters);
+                        // --- END OF ULTIMATE FIX ---
                         
                         let result;
                         if (this.page) {
@@ -122,7 +133,7 @@ export class AgentLoop {
                         console.log(`[Agent Result] Action outcome:`, result);
                         observation = `Action '${action}' completed. Outcome: ${result.message}`;
                         
-                        if (action === 'scrapePostsFromTarget' && result.success && result.data.length > 0) {
+                        if (action === 'scrapePostsFromTarget' && result.success && result.data?.length > 0) {
                             this.state.lastScrapedPosts = result.data;
                             observation += ` I have saved ${result.data.length} posts to my memory.`;
                         }
@@ -144,44 +155,40 @@ export class AgentLoop {
                 console.log('[AgentLoop] No tasks found, waiting...');
             }
             
-            await new Promise(resolve => setTimeout(resolve, 30000));
+            // For testing, we break the outer while loop after one task cycle.
+            break;
         }
+        console.log('--- AgentLoop: Test Iteration Finished ---');
     }
 
     private buildPrompt(task: any, observation: string): string {
-        // ... (buildPrompt method remains the same as the last correct version) ...
         const availableActions = Object.keys(actionRegistry);
-    
+        
+        // --- PROMPT SIMPLIFIED: AI's ONLY JOB IS TO CHOOSE THE NEXT ACTION ---
         return `
-          You are a methodical AI agent. Your goal is to create a step-by-step plan and execute it. You MUST respond with a single JSON object in a markdown code block.
+          You are a logical AI agent. Your ONLY job is to choose the single next action to perform. Respond with a single JSON object.
 
-          **CRITICAL RULES:**
-          1. Your response MUST be a single JSON object inside a \`\`\`json code block.
-          2. The "action" MUST be ONE of the EXACT names from the 'Available Actions' list.
-          3. When the task is complete, your final action MUST be "finish_task".
-
-          **THINKING PROCESS (Follow these steps):**
-          1.  **Analyze the GOAL:** What is the final objective of the task: \`${JSON.stringify(task)}\`?
-          2.  **Analyze the current SITUATION:** What does the last observation tell me: \`${observation.substring(0, 300)}...\`?
-          3.  **CREATE A PLAN:** Based on the goal and situation, what is the logical sequence of actions?
-              *   IF the task is to interact in a group AND my last observation says I am on the homepage, my FIRST step is ALWAYS \`navigateToGroup\`.
-              *   IF I have successfully navigated to the group but have no post information in my memory, my NEXT step is ALWAYS \`scrapePostsFromTarget\`.
-              *   IF I have scraped posts (check memory), my NEXT step is to interact with the first un-interacted post, starting with \`likePost\`.
-              *   IF I have liked a post, my NEXT step is \`commentOnPost\` on the SAME post. For the comment, I will use the "smart" mode (by not providing a commentText).
-              *   IF all interactions for the required number of posts are done, my FINAL step is \`finish_task\`.
-          4.  **Select ONE action:** Choose the VERY NEXT action from your plan.
-          5.  **Determine Parameters:** What parameters does this single action need? For scraping, I will decide on a reasonable number of posts to scrape (e.g., 5).
+          **THINKING PROCESS:**
+          1.  **GOAL:** ${JSON.stringify(task)}
+          2.  **SITUATION (Last Observation):** \`${observation.substring(0, 300)}...\`
+          3.  **PLAN (Your internal thought process):**
+              *   IF I need to be in a group and I'm not, I'll choose \`navigateToGroup\`.
+              *   IF I'm in a group but have no posts in memory, I'll choose \`scrapePostsFromTarget\`.
+              *   IF I have posts in memory and haven't interacted, I'll choose \`likePost\`.
+              *   IF I have liked a post, I'll choose \`commentOnPost\`.
+              *   IF the task is done, I'll choose \`finish_task\`.
+          4.  **CHOOSE ONE ACTION:** Based on your plan, what is the single next action?
 
           **CONTEXT:**
           - Available Actions: ${JSON.stringify(availableActions)}
           - Short-Term Memory (State): ${JSON.stringify(this.state)}
 
-          **YOUR RESPONSE (JSON ONLY):**
+          **YOUR RESPONSE (JSON ONLY - The 'parameters' object can be empty, the code will handle it):**
           \`\`\`json
           {
-            "thought": "My plan is to navigate, scrape, like, and comment. My current situation is '${observation.substring(0, 50)}...'. My next action is to scrape posts to get information. I'll scrape 5 posts to have some options.",
+            "thought": "Based on my plan and the situation, the next logical action is to scrape posts.",
             "action": "scrapePostsFromTarget",
-            "parameters": { "count": 5 }
+            "parameters": {}
           }
           \`\`\`
         `;
