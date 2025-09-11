@@ -17,65 +17,64 @@ export async function scrapePostsFromTarget(
     }
 
     try {
-        console.log(`[Action:scrapePostsFromTarget] Scraping the top ${count} posts using new strategy...`);
+        console.log(`[Action:scrapePostsFromTarget] Scraping up to ${count} posts using VISIBILITY strategy...`);
         
-        // --- START OF TACTICAL UPGRADE V2 ---
+        // --- START OF TACTICAL UPGRADE V3 ---
 
-        // 1. First, locate all the permalink locators directly. This is our "beacon".
-        const permalinkLocator = page.locator('a[href*="/posts/"], a[href*="/videos/"], a[href*="/reel/"]');
-
-        // 2. Wait for at least one link to be visible to ensure the page is loaded.
-        console.log('[Action:scrapePostsFromTarget] Waiting for post links to become visible...');
-        await permalinkLocator.first().waitFor({ state: 'visible', timeout: 30000 });
-        console.log('[Action:scrapePostsFromTarget] Post links are visible.');
+        const results: { postUrl: string, textContent: string }[] = [];
+        const seenPostUrls = new Set<string>();
+        let scrollAttempts = 0;
         
-        // 3. Smart Scrolling to load enough posts.
-        let allLinks = await permalinkLocator.all();
-        let retries = 3;
-        while (allLinks.length < count && retries > 0) {
-            console.log(`[Action:scrapePostsFromTarget] Only ${allLinks.length} post links visible. Scrolling to load more...`);
-            await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-            await page.waitForTimeout(3000); // Wait for new content to load
-            allLinks = await permalinkLocator.all();
-            retries--;
-        }
+        // We will scroll up to 5 times to find enough posts.
+        while (results.length < count && scrollAttempts < 5) {
+            
+            // 1. Find ALL article containers currently in the DOM.
+            const articleLocators = page.locator('div[role="article"]');
+            const articleCount = await articleLocators.count();
 
-        if (allLinks.length === 0) {
-            return { success: true, message: 'No post links found on the current page.', data: [] };
-        }
-        
-        // --- END OF TACTICAL UPGRADE V2 ---
-
-        const linksToScrape = allLinks.slice(0, count);
-        const results = [];
-
-        for (const linkElement of linksToScrape) {
-            try {
-                const postUrl = await linkElement.getAttribute('href');
-                if (!postUrl) {
-                    console.warn('[Action:scrapePostsFromTarget] Found a link element without an href, skipping.');
-                    continue;
-                }
-                
-                // For each link, go up to the ancestor 'article' container.
-                const postContainer = linkElement.locator('xpath=./ancestor::div[@role="article"]');
-                const containerCount = await postContainer.count();
-
-                if (containerCount === 0) {
-                    console.warn(`[Action:scrapePostsFromTarget] Could not find article container for link ${postUrl}, skipping.`);
-                    continue;
-                }
-
-                const textContent = await postContainer.first().innerText();
-
-                results.push({
-                    postUrl: postUrl,
-                    textContent: textContent.trim().substring(0, 300) + '...',
-                });
-
-            } catch (e) {
-                console.warn('[Action:scrapePostsFromTarget] Could not process one post element, skipping.', e.message);
+            if (articleCount === 0 && scrollAttempts === 0) {
+                await articleLocators.first().waitFor({ state: 'attached', timeout: 20000 });
             }
+
+            // 2. Iterate through the found containers.
+            for (let i = 0; i < articleCount; i++) {
+                const article = articleLocators.nth(i);
+                
+                // 3. Find the permalink inside this specific article.
+                const linkLocator = article.locator('a[href*="/posts/"], a[href*="/videos/"], a[href*="/reel/"]').first();
+                const linkCount = await linkLocator.count();
+
+                if (linkCount > 0) {
+                    const postUrl = await linkLocator.getAttribute('href');
+                    if (postUrl && !seenPostUrls.has(postUrl)) {
+                        seenPostUrls.add(postUrl);
+                        const textContent = await article.innerText();
+                        results.push({
+                            postUrl,
+                            textContent: textContent.trim().substring(0, 300) + '...',
+                        });
+
+                        // If we have found enough posts, we can stop.
+                        if (results.length >= count) {
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // If we still need more posts, scroll down and try again.
+            if (results.length < count) {
+                console.log(`[Action:scrapePostsFromTarget] Found ${results.length}/${count} posts. Scrolling to find more...`);
+                await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+                await page.waitForTimeout(3000); // Wait for new content to load
+                scrollAttempts++;
+            }
+        }
+        
+        // --- END OF TACTICAL UPGRADE V3 ---
+
+        if (results.length === 0) {
+            return { success: true, message: 'No posts found on the current page.', data: [] };
         }
 
         return {

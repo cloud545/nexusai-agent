@@ -2,9 +2,9 @@ import { Page } from 'playwright-core';
 import { ActionResult } from './action.types';
 
 const randomDelay = (minSeconds: number, maxSeconds: number): Promise<void> => {
-  const delayMs = Math.floor(Math.random() * (maxSeconds - minSeconds + 1) + minSeconds) * 1000;
-  console.log(`[Action Delay] Pausing for ${delayMs / 1000} seconds...`);
-  return new Promise(resolve => setTimeout(resolve, delayMs));
+    const delayMs = Math.floor(Math.random() * (maxSeconds - minSeconds + 1) + minSeconds) * 1000;
+    console.log(`[Action Delay] Pausing for ${delayMs / 1000} seconds...`);
+    return new Promise(resolve => setTimeout(resolve, delayMs));
 };
 
 export async function navigateToGroup(
@@ -18,38 +18,37 @@ export async function navigateToGroup(
 
   try {
     console.log(`[Action:navigateToGroup] Navigating to group search for: "${groupName}"`);
-    // We still encode for the URL, this part is correct.
     const encodedGroupName = encodeURIComponent(groupName);
     const searchUrl = `https://www.facebook.com/groups/search/groups/?q=${encodedGroupName}`;
 
-    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    await randomDelay(3, 6);
+    await page.goto(searchUrl, { timeout: 60000 });
 
-    console.log('[Action:navigateToGroup] Searching for the group link on the page...');
+    console.log('[Action:navigateToGroup] Waiting for search results to appear...');
+
+    // --- START OF CRITICAL FIX ---
+    // We are now using a RegExp object directly, which Playwright handles correctly,
+    // instead of embedding a regex literal into a string.
+    const groupLinkLocator = page.locator(`div[role="main"] a[href*="/groups/"]`).filter({ hasText: new RegExp(`^${groupName}$`, 'i') }).first();
+    // --- END OF CRITICAL FIX ---
+
+    await groupLinkLocator.waitFor({ state: 'visible', timeout: 30000 });
     
-    // --- START OF FIX ---
-    // Playwright's :has-text() accepts a string or a RegExp object, but not a string literal of a regex.
-    // We create a new RegExp object to perform a case-insensitive, exact match.
-    const groupNameRegex = new RegExp(`^${groupName}$`, 'i');
-    const groupLinkLocator = page.locator('div[role="main"] a[href*="/groups/"]').filter({ hasText: groupNameRegex }).first();
-    // --- END OF FIX ---
-
-    const count = await groupLinkLocator.count();
-    if (count === 0) {
-      const errorMsg = `Could not find a clickable link for group: "${groupName}" on the search results page.`;
-      console.log(`[Action:navigateToGroup] ${errorMsg}`);
-      return { success: false, message: errorMsg };
-    }
-
+    await randomDelay(1, 3);
     console.log('[Action:navigateToGroup] Group link found. Clicking...');
     await groupLinkLocator.click();
 
-    await page.waitForURL('**/groups/**', { waitUntil: 'networkidle', timeout: 60000 });
-    await randomDelay(4, 7);
+    console.log('[Action:navigateToGroup] Waiting for group page to load...');
+    
+    // --- START OF CRITICAL FIX ---
+    // Using RegExp object here as well for consistency and safety.
+    const groupTitleLocator = page.locator('h1').filter({ hasText: new RegExp(groupName, 'i') });
+    // --- END OF CRITICAL FIX ---
+    
+    await groupTitleLocator.waitFor({ state: 'visible', timeout: 30000 });
 
-    const currentUrl = page.url();
-    console.log(`[Action:navigateToGroup] Navigation complete. Current URL: ${currentUrl}`);
-    return { success: true, message: `Successfully navigated to a group page for "${groupName}".` };
+    await randomDelay(2, 4);
+    console.log(`[Action:navigateToGroup] Successfully navigated to group: "${groupName}".`);
+    return { success: true, message: `Successfully navigated to group: "${groupName}"` };
 
   } catch (error: any) {
     console.error(`[Action:navigateToGroup] An unexpected error occurred:`, error);
