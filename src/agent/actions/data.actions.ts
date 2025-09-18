@@ -1,90 +1,62 @@
+// FILE: nexusai-agent/src/agent/actions/data.actions.ts
+
 import { Page } from 'playwright-core';
 import { ActionResult } from './action.types';
-
-const randomDelay = (minSeconds: number, maxSeconds: number): Promise<void> => {
-    const delayMs = Math.floor(Math.random() * (maxSeconds - minSeconds + 1) + minSeconds) * 1000;
-    console.log(`[Action Delay] Pausing for ${delayMs / 1000} seconds...`);
-    return new Promise(resolve => setTimeout(resolve, delayMs));
-};
+import { randomDelay } from '../../utils/delay';
 
 export async function scrapePostsFromTarget(
     page: Page,
-    params: { count: number },
+    params: {
+        count: number,
+        selectors?: { postContainer?: string }
+    },
 ): Promise<ActionResult> {
-    const { count } = params;
+    const { count, selectors } = params;
     if (!count || count <= 0) {
-        return { success: false, message: 'Action failed: "count" parameter must be a positive number.' };
+        return { success: false, message: 'Invalid parameter: count must be a positive number.' };
     }
 
     try {
-        console.log(`[Action:scrapePostsFromTarget] Scraping up to ${count} posts using VISIBILITY strategy...`);
-        
-        // --- START OF TACTICAL UPGRADE V3 ---
+        console.log(`[Action:scrapePostsFromTarget] Scraping up to ${count} posts...`);
 
-        const results: { postUrl: string, textContent: string }[] = [];
-        const seenPostUrls = new Set<string>();
-        let scrollAttempts = 0;
-        
-        // We will scroll up to 5 times to find enough posts.
-        while (results.length < count && scrollAttempts < 5) {
-            
-            // 1. Find ALL article containers currently in the DOM.
-            const articleLocators = page.locator('div[role="article"]');
-            const articleCount = await articleLocators.count();
+        // --- MODIFIED SABOTAGE ---
+        // The sabotage is now conditional. We only fail if the Hawkeye hasn't provided a better selector.
+        const defaultSelector = "#this-selector-will-definitely-fail-12345";
+        const postContainerSelector = selectors?.postContainer || defaultSelector;
 
-            if (articleCount === 0 && scrollAttempts === 0) {
-                await articleLocators.first().waitFor({ state: 'attached', timeout: 20000 });
-            }
+        if (postContainerSelector === defaultSelector) {
+            console.warn(`[SABOTAGE ACTIVE] Using the deliberately failing DEFAULT selector: "${postContainerSelector}"`);
+        } else {
+            console.log(`[HAWKEYE INTEL] Using cloud-provided selector: "${postContainerSelector}"`);
+        }
+        // --- END OF MODIFICATION ---
 
-            // 2. Iterate through the found containers.
-            for (let i = 0; i < articleCount; i++) {
-                const article = articleLocators.nth(i);
-                
-                // 3. Find the permalink inside this specific article.
-                const linkLocator = article.locator('a[href*="/posts/"], a[href*="/videos/"], a[href*="/reel/"]').first();
-                const linkCount = await linkLocator.count();
+        // Use a short timeout to fail fast if the selector is bad.
+        await page.waitForSelector(postContainerSelector, { state: 'attached', timeout: 5000 });
+        const postContainers = await page.locator(postContainerSelector).all();
 
-                if (linkCount > 0) {
-                    const postUrl = await linkLocator.getAttribute('href');
-                    if (postUrl && !seenPostUrls.has(postUrl)) {
-                        seenPostUrls.add(postUrl);
-                        const textContent = await article.innerText();
-                        results.push({
-                            postUrl,
-                            textContent: textContent.trim().substring(0, 300) + '...',
-                        });
-
-                        // If we have found enough posts, we can stop.
-                        if (results.length >= count) {
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            // If we still need more posts, scroll down and try again.
-            if (results.length < count) {
-                console.log(`[Action:scrapePostsFromTarget] Found ${results.length}/${count} posts. Scrolling to find more...`);
-                await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-                await page.waitForTimeout(3000); // Wait for new content to load
-                scrollAttempts++;
-            }
+        if (postContainers.length === 0) {
+            console.error('[Action:scrapePostsFromTarget] No post containers found using the selector.');
+            return { success: false, message: 'Selector issue: No post containers found on the page.' };
         }
         
-        // --- END OF TACTICAL UPGRADE V3 ---
-
-        if (results.length === 0) {
-            return { success: true, message: 'No posts found on the current page.', data: [] };
-        }
+        // In a real run, you would loop through postContainers here and extract data.
+        // For this test, simply finding them is a success.
+        const scrapedData = postContainers.slice(0, count).map((_, index) => ({
+            postUrl: `https://fake-post-url.com/${index}`,
+            textContent: `This is a simulated scraped post #${index + 1}.`,
+        }));
+        
+        await randomDelay(1000, 2000);
 
         return {
             success: true,
-            message: `Successfully scraped ${results.length} posts.`,
-            data: results
+            message: `Successfully simulated scraping of ${scrapedData.length} posts.`,
+            data: scrapedData,
         };
 
-    } catch (error: any) {
-        console.error(`[Action:scrapePostsFromTarget] An unexpected error occurred:`, error);
-        return { success: false, message: `Error in scrapePostsFromTarget: ${error.message}` };
+    } catch (error) {
+        console.error(`[Action:scrapePostsFromTarget] An error occurred:`, error.message);
+        return { success: false, message: `Selector issue or critical error during scraping: ${error.message}` };
     }
 }

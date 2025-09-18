@@ -86,4 +86,18 @@ export class BrowserService {
     }
     return this.playwrightPage;
   }
+
+  public async closeBrowser(): Promise<void> {
+    if (this.playwrightBrowser && this.playwrightBrowser.isConnected()) {
+      console.log('[BrowserService] Closing browser connection...');
+      try {
+        await this.playwrightBrowser.close();
+      } catch (error) {
+        console.error('[BrowserService] Error while closing browser:', error.message);
+      }
+    }
+    this.playwrightBrowser = null;
+    this.playwrightPage = null;
+    console.log('[BrowserService] Browser closed and resources cleaned up.');
+  }
 }

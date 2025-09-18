@@ -1,177 +1,85 @@
+// FILE: nexusai-agent/src/main/services/ai.service.ts (Rename from ollama.service.ts)
+
 import axios, { AxiosInstance } from 'axios';
-import * as ty from 'ty-sdk';
 import * as dotenv from 'dotenv';
-import * as path from 'path';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+// Load environment variables from .env file
+dotenv.config();
 
-type AnyClient = any;
+type AiProvider = 'ollama' | 'gemini';
 
-function pick<T = any>(obj: any, pathStr: string): T | undefined {
-  return pathStr.split('.').reduce((o, k) => (o ? o[k] : undefined), obj);
-}
+export class AiService {
+  private provider: AiProvider;
+  private ollamaModel: string;
 
-/**
- * 尝试多种常见的导出形态来构建 ty-sdk 客户端
- */
-function buildTyClient(apiKey?: string): AnyClient | null {
-  if (!apiKey) return null;
-
-  // 兼容 ESM/CJS：有些包挂在 default 上
-  const mod: any = (ty as any)?.default ?? ty;
-
-  // 1) 如果是类（可被 new）
-  if (typeof mod === 'function') {
-    try {
-      return new mod({ apiKey });
-    } catch {
-      // 2) 如果是工厂函数
-      try {
-        return mod({ apiKey });
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  // 3) 命名导出里常见的构造/工厂
-  const candidates = [
-    (m: any) => (m?.Client ? new m.Client({ apiKey }) : undefined),
-    (m: any) => (typeof m?.createClient === 'function' ? m.createClient({ apiKey }) : undefined),
-    (m: any) => (typeof m?.init === 'function' ? m.init({ apiKey }) : undefined),
-  ];
-
-  for (const make of candidates) {
-    try {
-      const c = make(mod);
-      if (c) return c;
-    } catch {
-      // 尝试下一个
-    }
-  }
-
-  // 4) 最后兜底：有些 SDK 直接导出已经初始化好的客户端，看看能不能用
-  return mod;
-}
-
-/**
- * 兼容多种聊天/文本生成调用形态，并尽量抽出纯文本
- */
-async function tyChat(client: AnyClient, prompt: string, model = 'qwen-plus'): Promise<string> {
-  // 1) OpenAI 风格：chat.completions.create
-  if (pick(client, 'chat.completions.create')) {
-    const res = await client.chat.completions.create({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    return (
-      pick<string>(res, 'choices.0.message.content') ??
-      pick<string>(res, 'choices.0.text') ??
-      JSON.stringify(res)
-    );
-  }
-
-  // 2) OpenAI 新 SDK 风格：responses.create
-  if (pick(client, 'responses.create')) {
-    const res = await client.responses.create({
-      model,
-      input: [{ role: 'user', content: prompt }],
-    });
-    // 常见位置：res.output_text 或 segments
-    return (
-      (res as any).output_text ??
-      pick<string>(res, 'output.0.content.0.text') ??
-      JSON.stringify(res)
-    );
-  }
-
-  // 3) 简化风格：client.generate / client.chat.create / client.text.generate
-  const tryCalls: Array<(c: any) => Promise<any>> = [
-    (c) => c.generate({ model, prompt }),
-    (c) => c.chat?.create?.({ model, messages: [{ role: 'user', content: prompt }] }),
-    (c) => c.text?.generate?.({ model, prompt }),
-    (c) => c.completions?.create?.({ model, prompt }),
-  ].filter(Boolean) as any;
-
-  for (const call of tryCalls) {
-    try {
-      const res = await call(client);
-      // 常见返回字段尝试
-      const text =
-        pick<string>(res, 'choices.0.message.content') ??
-        pick<string>(res, 'choices.0.text') ??
-        pick<string>(res, 'data.0.text') ??
-        (res as any).text ??
-        (res as any).output_text ??
-        JSON.stringify(res);
-      if (text) return text;
-    } catch {
-      // 尝试下一个形态
-    }
-  }
-
-  throw new Error('Unsupported ty-sdk client shape: cannot find a compatible chat/generate method.');
-}
-
-export class OllamaService {
-  private axiosInstance: AxiosInstance;
-  private readonly OLLAMA_BASE_URL = 'http://localhost:11434';
-  private cloudClient: AnyClient | null;
-
+  // Clients for different providers
+  private ollamaClient: AxiosInstance;
+  private geminiClient: GoogleGenerativeAI;
+  
   constructor() {
-    this.axiosInstance = axios.create({ baseURL: this.OLLAMA_BASE_URL });
+    this.provider = (process.env.AI_PROVIDER as AiProvider) || 'ollama';
+    this.ollamaModel = process.env.OLLAMA_MODEL || 'mistral:7b-instruct';
 
-    const apiKey = process.env.DASHSCOPE_API_KEY;
-    this.cloudClient = buildTyClient(apiKey);
+    console.log(`[AiService] Initializing with provider: ${this.provider}`);
 
-    if (this.cloudClient) {
-      console.log('[OllamaService] Cloud client (ty-sdk) initialized.');
-    } else {
-      console.warn('[OllamaService] DASHSCOPE_API_KEY not found or ty-sdk init failed. Cloud completion disabled.');
-    }
-  }
-
-  public async checkHealth(): Promise<boolean> {
-    try {
-      await this.axiosInstance.get('/');
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  public async generateLocalCompletion(prompt: string, model: string): Promise<string | null> {
-    try {
-      console.log(`[OllamaService] Generating completion with LOCAL model: ${model}...`);
-      const response = await this.axiosInstance.post('/api/generate', {
-        model,
-        prompt,
-        stream: false,
+    if (this.provider === 'ollama') {
+      this.ollamaClient = axios.create({
+        baseURL: 'http://localhost:11434',
+        timeout: 60000,
       });
-      return response.data?.response ?? null;
-    } catch (error: any) {
-      console.error(`Error communicating with Ollama model ${model}:`, error?.message || error);
+    } else if (this.provider === 'gemini') {
+      if (!process.env.GEMINI_API_KEY) {
+        throw new Error('[AiService] FATAL: AI_PROVIDER is set to "gemini" but GEMINI_API_KEY is missing in .env file.');
+      }
+      this.geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    } else {
+        throw new Error(`[AiService] FATAL: Invalid AI_PROVIDER "${this.provider}" in .env file. Use "ollama" or "gemini".`);
+    }
+  }
+
+  public async generateDecision(prompt: string): Promise<string | null> {
+    console.log(`[AiService] Generating decision using ${this.provider}...`);
+    
+    if (this.provider === 'ollama') {
+      return this.generateWithOllama(prompt);
+    }
+    
+    if (this.provider === 'gemini') {
+      return this.generateWithGemini(prompt);
+    }
+
+    return null;
+  }
+  
+  private async generateWithOllama(prompt: string): Promise<string | null> {
+    try {
+      const response = await this.ollamaClient.post('/api/generate', {
+        model: this.ollamaModel,
+        prompt: prompt,
+        stream: false,
+        options: {
+          temperature: 0.1, // Lower temperature for more deterministic, instruction-following behavior
+          top_p: 0.9,
+        }
+      });
+      return response.data.response;
+    } catch (error) {
+      console.error('[AiService-Ollama] Failed to generate completion:', error.message);
       return null;
     }
   }
 
-  /**
-   * 使用 ty-sdk 走云端（如 qwen-plus）
-   */
-  public async generateCloudCompletion(prompt: string, model = 'qwen-plus'): Promise<string | null> {
-    if (!this.cloudClient) {
-      const msg = 'Error: Cloud client is not initialized. Check DASHSCOPE_API_KEY and ty-sdk.';
-      console.error(`[OllamaService] ${msg}`);
-      return msg;
-    }
-
+  private async generateWithGemini(prompt: string): Promise<string | null> {
     try {
-      console.log(`[OllamaService] Generating completion with CLOUD model: ${model}...`);
-      const text = await tyChat(this.cloudClient, prompt, model);
-      return text ?? null;
-    } catch (error: any) {
-      console.error(`Error communicating with ty-sdk API:`, error?.message || error);
-      return null;
+        const model = this.geminiClient.getGenerativeModel({ model: "gemini-pro"});
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        return text;
+    } catch (error) {
+        console.error('[AiService-Gemini] Failed to generate completion:', error.message);
+        return null;
     }
   }
 }
